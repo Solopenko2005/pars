@@ -24,7 +24,6 @@ class DataExporter:
 
         total_vacancies = len(vacancies)
 
-        # 🔑 ФИЛЬТРАЦИЯ: оставляем только вакансии с code != "unknown"
         relevant_vacancies = [
             vac for vac in vacancies
             if vac.get('profession_code') != 'unknown'
@@ -33,7 +32,7 @@ class DataExporter:
 
         filtered_count = total_vacancies - len(relevant_vacancies)
 
-        print(f"\n📊 Статистика фильтрации:")
+        print(f"\nСтатистика фильтрации:")
         print(f"  - Всего собрано вакансий: {total_vacancies}")
         print(f"  - Релевантных вакансий: {len(relevant_vacancies)}")
         print(f"  - Отфильтровано нерелевантных: {filtered_count}")
@@ -41,7 +40,7 @@ class DataExporter:
             print(f"  - Процент релевантных: {len(relevant_vacancies) / total_vacancies * 100:.1f}%")
 
         if not relevant_vacancies:
-            print("⚠️ Внимание: Нет релевантных вакансий для экспорта")
+            print("Внимание: Нет релевантных вакансий для экспорта")
             # Создаем файл с пояснением
             empty_df = pd.DataFrame([{
                 'Статус': 'Нет релевантных вакансий',
@@ -51,7 +50,7 @@ class DataExporter:
             }])
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 empty_df.to_excel(writer, sheet_name='Информация', index=False)
-            print(f"⚠️ Создан файл с предупреждением: {filename}")
+            print(f"Создан файл с предупреждением: {filename}")
             return filename
 
         # Создаем DataFrame с релевантными вакансиями
@@ -154,8 +153,8 @@ class DataExporter:
                     adjusted_width = min(max_length + 2, 50)
                     worksheet.column_dimensions[column_letter].width = adjusted_width
 
-        print(f"\n✅ Данные сохранены в файл: {filename}")
-        print(f"📈 Всего листов в файле: {len(writer.sheets) if 'writer' in locals() else 'N/A'}")
+        print(f"\nДанные сохранены в файл: {filename}")
+        print(f"Всего листов в файле: {len(writer.sheets) if 'writer' in locals() else 'N/A'}")
 
         return filename
 
@@ -186,13 +185,13 @@ class DataExporter:
 
         filtered_count = total_vacancies - len(relevant_vacancies)
 
-        print(f"\n📊 Статистика фильтрации для CSV:")
+        print(f"\nСтатистика фильтрации для CSV:")
         print(f"  - Всего собрано: {total_vacancies}")
         print(f"  - Экспортировано релевантных: {len(relevant_vacancies)}")
         print(f"  - Отфильтровано: {filtered_count}")
 
         if not relevant_vacancies:
-            print("⚠️ Нет релевантных вакансий для экспорта в CSV")
+            print("Нет релевантных вакансий для экспорта в CSV")
             # Создаем пустой CSV с пояснением
             import csv
             with open(filename, 'w', encoding='utf-8-sig', newline='') as f:
@@ -200,7 +199,7 @@ class DataExporter:
                 writer.writerow(['Статус', 'Всего найдено', 'Отфильтровано', 'Сообщение'])
                 writer.writerow(['Нет релевантных вакансий', total_vacancies, filtered_count,
                                  'Все вакансии были отфильтрованы как нерелевантные'])
-            print(f"⚠️ Создан CSV файл с предупреждением: {filename}")
+            print(f"Создан CSV файл с предупреждением: {filename}")
             return filename
 
         df = pd.DataFrame(relevant_vacancies)
@@ -227,7 +226,7 @@ class DataExporter:
         df = df.rename(columns=existing_mapping)
 
         df.to_csv(filename, index=False, encoding='utf-8-sig')
-        print(f"✅ Данные сохранены в файл: {filename}")
+        print(f"Данные сохранены в файл: {filename}")
 
         return filename
 
