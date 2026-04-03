@@ -1,4 +1,3 @@
-# parsers/superjob_parser.py
 import requests
 import time
 import threading
@@ -9,6 +8,7 @@ from urllib3.util.retry import Retry
 from utils.salary_processor import SalaryProcessor
 from config import SUPERJOB_API_URL, SUPERJOB_API_TOWNS_URL, SUPERJOB_API_KEY, TIMEOUT, MAX_VACANCIES_PER_CITY, \
     MAX_WORKERS, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_HOST
+
 
 class SuperJobParser:
     def __init__(self):
@@ -54,7 +54,7 @@ class SuperJobParser:
         return False
 
     def _get_default_towns(self) -> Dict[str, int]:
-        #Базовый список городов на случай ошибки API
+        # Базовый список городов на случай ошибки API
         return {
             "Москва": 4,
             "Санкт-Петербург": 5,
@@ -76,7 +76,7 @@ class SuperJobParser:
             "Тюмень": 83,
         }
 
-    #Получение всех городов через API SuperJob
+    # Получение всех городов через API SuperJob
     def _get_all_towns(self) -> Dict[str, int]:
         all_towns = {}
         page = 0
@@ -106,7 +106,8 @@ class SuperJobParser:
                          if self._is_russian_city(name)}
         print(f"Найдено {len(russian_towns)} российских городов")
         return russian_towns
-    #Поиск вакансий на SuperJob по всем городам
+
+    # Поиск вакансий на SuperJob по всем городам
     def search_vacancies(self, profession_name: str) -> List[Dict]:
         all_vacancies = []
         towns_to_parse = list(self.all_towns.items())[:100]
@@ -128,7 +129,7 @@ class SuperJobParser:
                     print(f"Ошибка в городе {city_name}: {e}")
         return all_vacancies
 
-    #Поиск вакансий в конкретном городе
+    # Поиск вакансий в конкретном городе
     def _search_in_city(self, profession_name: str, town_id: int, city_name: str) -> List[Dict]:
         vacancies = []
         page = 0
@@ -147,7 +148,7 @@ class SuperJobParser:
                     data = response.json()
                     for item in data.get('objects', []):
                         vacancy_data = self._parse_vacancy(item, profession_name, city_name)
-                        if vacancy_data:
+                        if vacancy_data:  # Только релевантные вакансии
                             vacancies.append(vacancy_data)
                     if not data.get('more'):
                         break
@@ -156,7 +157,8 @@ class SuperJobParser:
                 except Exception as e:
                     break
         return vacancies
-    #Парсинг одной вакансии
+
+    # Парсинг одной вакансии
     def _parse_vacancy(self, vacancy: Dict, search_term: str, city_name: str = None) -> Optional[Dict]:
         try:
             # === ЗАРПЛАТА ===
@@ -168,30 +170,72 @@ class SuperJobParser:
             )
             average_salary = self.salary_processor.get_average_salary(salary_from, salary_to)
 
-            # === ДАТА ПУБЛИКАЦИИ ===
+            # === ЗАГОЛОВОК ВАКАНСИИ ===
+            title = vacancy.get('profession', '')
+
+            # === ПОЛУЧАЕМ КОД ПРОФЕССИИ ===
+            # Передаем и заголовок, и поисковый запрос
+            profession_code = self._get_profession_code(title, search_term)
+
+            if profession_code == "unknown":
+                print(f"  [FILTER] SuperJob: пропущена '{title[:60]}...' (искали: {search_term})")
+                return None
+
             date_posted = None
-            pub_date = vacancy.get('publication_date') or vacancy.get('date_published')
-            if pub_date:
-                # Нормализация формата: "24.03.2026" → "2026-03-24"
-                if isinstance(pub_date, str):
-                    if '.' in pub_date:  # Формат "24.03.2026"
-                        try:
+
+            # SuperJob API использует поле 'date_published' (Unix timestamp в секундах)
+            # Пример: "date_published": 1742800000
+            date_published = vacancy.get('date_published')
+
+            if date_published:
+                try:
+                    # Если это Unix timestamp (число)
+                    if isinstance(date_published, (int, float)):
+                        from datetime import datetime
+                        date_obj = datetime.fromtimestamp(date_published)
+                        date_posted = date_obj.strftime('%Y-%m-%d')
+                    # Если это строка с датой
+                    elif isinstance(date_published, str):
+                        if '.' in date_published:  # Формат "24.03.2026"
+                            parts = date_published.split('.')
+                            if len(parts) == 3:
+                                date_posted = f"{parts[2]}-{parts[1]}-{parts[0]}"
+                        elif '-' in date_published:  # Формат "2026-03-24"
+                            date_posted = date_published[:10]
+                        else:
+                            # Возможно, это тоже timestamp в виде строки
+                            try:
+                                timestamp = int(date_published)
+                                from datetime import datetime
+                                date_obj = datetime.fromtimestamp(timestamp)
+                                date_posted = date_obj.strftime('%Y-%m-%d')
+                            except ValueError:
+                                date_posted = date_published[:10] if len(date_published) >= 10 else date_published
+                except Exception as e:
+                    print(f"  [WARN] Ошибка парсинга даты SuperJob: {e}, значение: {date_published}")
+                    date_posted = None
+
+            # Если date_published не найден, пробуем другие возможные поля
+            if not date_posted:
+                # Пробуем publication_date
+                pub_date = vacancy.get('publication_date')
+                if pub_date:
+                    if isinstance(pub_date, str):
+                        if '.' in pub_date:
                             parts = pub_date.split('.')
                             if len(parts) == 3:
-                                date_posted = f"{parts[2]}-{parts[1]}-{parts[0]}"  # YYYY-MM-DD
-                        except:
+                                date_posted = f"{parts[2]}-{parts[1]}-{parts[0]}"
+                        elif '-' in pub_date:
+                            date_posted = pub_date[:10]
+                        else:
                             date_posted = pub_date[:10] if len(pub_date) >= 10 else pub_date
-                    elif '-' in pub_date:  # Уже формат "2026-03-24"
-                        date_posted = pub_date[:10]
-                    else:
-                        date_posted = pub_date
 
             city = city_name or vacancy.get('town', {}).get('title', 'Не указан')
 
             return {
-                'profession_code': self._get_profession_code(search_term),
+                'profession_code': profession_code,
                 'profession_name': search_term,
-                'title': vacancy.get('profession', ''),
+                'title': title,
                 'city': city,
                 'salary_from': salary_from,
                 'salary_to': salary_to,
@@ -202,15 +246,127 @@ class SuperJobParser:
                 'company': vacancy.get('firm_name', ''),
                 'experience': vacancy.get('experience', {}).get('title', ''),
                 'employment': vacancy.get('type_of_work', {}).get('title', ''),
-                'date_posted': date_posted  # ← НОВОЕ ПОЛЕ
+                'date_posted': date_posted
             }
         except Exception as e:
             print(f"Ошибка парсинга вакансии SuperJob: {e}")
             return None
 
-    def _get_profession_code(self, profession_name: str) -> str:
-        from professions import PROFESSIONS
-        for code, name in PROFESSIONS.items():
-            if profession_name.lower() in name.lower():
-                return code
+    def _get_profession_code(self, title: str, search_term: str = None) -> str:
+        """
+        Определение кода профессии по заголовку вакансии и поисковому запросу.
+        Возвращает код ТОЛЬКО если вакансия строго соответствует профессии.
+        """
+        if not title:
+            return "unknown"
+
+        title_lower = title.lower().strip()
+        search_term_lower = search_term.lower().strip() if search_term else ""
+
+        keywords_map = {
+            "13.001": [  # Механизация сельского хозяйства
+                "механизатор", "механизация сельского", "агротехник",
+                "механизатор сельского", "техник-механизатор"
+            ],
+            "13.002": [  # Птицевод
+                "птицевод", "оператор птицеводства", "птицефабрика",
+                "птичник", "птичница", "птицеводство"
+            ],
+            "13.003": [  # Животновод
+                "животновод", "скотовод", "животноводство", "крс", "мрс",
+                "оператор животноводства", "фермер животновод", "гуртоправ"
+            ],
+            "13.004": [  # Оператор машинного доения
+                "оператор машинного доения", "дояр", "доярка",
+                "машинное доение", "оператор доения"
+            ],
+            "13.005": [  # Агромелиорация
+                "агромелиорация", "мелиоратив", "осушение", "орошение",
+                "мелиоратор", "агромелиоратор"
+            ],
+            "13.006": [  # Тракторист
+                "тракторист", "тракторист-машинист", "машинист трактора",
+                "водитель трактора", "трактор", "механизатор трактор"
+            ],
+            "13.008": [  # Фитосанитарный мониторинг
+                "фитосанитарный", "фитосанитар", "карантин растений",
+                "защита растений", "фитопатолог"
+            ],
+            "13.009": [  # Мастер растениеводства
+                "мастер растениеводства", "растениевод", "агроном растениевод",
+                "специалист по растениеводству", "растениеводство"
+            ],
+            "13.010": [  # Оператор животноводческих комплексов
+                "оператор животноводческих комплексов", "животноводческий комплекс",
+                "оператор фермы", "механизированная ферма", "оператор мтф"
+            ],
+            "13.011": [  # Обработчик шкур
+                "обработчик шкур", "скорняк", "обработка шкур", "кожевник"
+            ],
+            "13.012": [  # Ветеринария
+                "ветеринар", "ветеринария", "ветврач", "ветеринарный врач",
+                "ветфельдшер", "ветеринарный фельдшер", "ветеринар-хирург"
+            ],
+            "13.013": [  # Зоотехния
+                "зоотехник", "зоотехния", "специалист по зоотехнии", "зооинженер"
+            ],
+            "13.014": [  # Пчеловод
+                "пчеловод", "пасечник", "пчеловодство", "бортник"
+            ],
+            "13.015": [  # Декоративное садоводство
+                "декоративное садоводство", "садовод декоративный",
+                "ландшафтный садовод", "флорист-садовод"
+            ],
+            "13.017": [  # Агроном
+                "агроном", "агрономия", "агроном-растениевод", "главный агроном"
+            ],
+            "13.018": [  # Мелиоративные системы
+                "мелиоративные системы", "эксплуатация мелиоративных", "мелиоратор"
+            ],
+            "13.020": [  # Селекционер животноводство
+                "селекционер животноводство", "селекция животноводство",
+                "племенное животноводство", "селекционер-животновод"
+            ],
+            "13.021": [  # Виноградарство
+                "виноградарь", "виноградарство", "винодел", "виноградарь-винодел"
+            ],
+            "13.023": [  # Агрохимик
+                "агрохимик", "агрохимия", "почвовед", "агрохимик-почвовед"
+            ],
+            "13.024": [  # Селекция генетика животноводство
+                "селекция генетика животноводство", "генетика животноводство",
+                "селекционер-генетик", "селекция животных"
+            ],
+            "13.025": [  # Семеноводство
+                "семеноводство", "семеновод", "селекция растениеводство",
+                "специалист по семеноводству"
+            ],
+        }
+        def is_relevant(text_lower: str, keywords: List[str]) -> bool:
+            for keyword in keywords:
+                if keyword.lower() in text_lower:
+                    return True
+            return False
+
+        search_term_code = None
+        for code, keywords in keywords_map.items():
+            if is_relevant(search_term_lower, keywords):
+                search_term_code = code
+                break
+
+        if search_term_code:
+            # Проверяем, что заголовок вакансии также соответствует этой профессии
+            if is_relevant(title_lower, keywords_map.get(search_term_code, [])):
+                return search_term_code
+            else:
+                # Заголовок не соответствует - вакансия нерелевантна
+                return "unknown"
+
+        # Проверяем соответствие заголовка поисковому запросу напрямую
+        if search_term_lower and search_term_lower in title_lower:
+            # Ищем код по ключевым словам в заголовке
+            for code, keywords in keywords_map.items():
+                if is_relevant(title_lower, keywords):
+                    return code
+
         return "unknown"
