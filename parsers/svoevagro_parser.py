@@ -249,7 +249,7 @@ class SvoevagroParser:
 
             # === ВОЗВРАТ РЕЗУЛЬТАТА ===
             return {
-                'profession_code': self._get_profession_code(search_term),
+                'profession_code': self._get_profession_code(title, search_term),
                 'profession_name': search_term,
                 'title': title,
                 'city': city,
@@ -291,27 +291,30 @@ class SvoevagroParser:
 
         return city if city else "Не указан"
 
-    def _get_profession_code(self, profession_name: str) -> str:
+    def _get_profession_code(self, title: str, search_term: str = None) -> str:
         """
-        Маппинг поискового термина на код профессии из справочника.
+        Определение кода профессии по заголовку вакансии.
+
+        Логика приоритетов:
+        1. Поиск целых ключевых слов из SEARCH_TERMS в заголовке вакансии
+        2. Поиск полных названий профессий из PROFESSIONS в заголовке
+        3. Фоллбэк: маппинг по поисковому термину (старая логика)
 
         Args:
-            profession_name: Термин из SEARCH_TERMS (напр. "тракторист")
+            title: Заголовок вакансии с сайта (напр. "Тракторист-машинист категории В")
+            search_term: Поисковый термин из SEARCH_TERMS (для обратной совместимости)
 
         Returns:
-            Код профессии из PROFESSIONS или "unknown"
+            Код профессии из справочника или "unknown"
         """
         from professions import PROFESSIONS
 
-        search_lower = profession_name.lower().strip()
+        if not title:
+            title = ""
 
-        # Прямое соответствие: термин в названии профессии
-        for code, full_name in PROFESSIONS.items():
-            if search_lower in full_name.lower():
-                return code
-
-        # Словарь сокращений для точного маппинга
-        shortcuts_map = {
+        title_lower = title.lower().strip()
+        # Ключи должны точно совпадать с элементами SEARCH_TERMS
+        term_to_code = {
             "механизация сельского хозяйства": "13.001",
             "птицевод": "13.002",
             "животновод": "13.003",
@@ -335,4 +338,32 @@ class SvoevagroParser:
             "семеноводство": "13.025",
         }
 
-        return shortcuts_map.get(search_lower, "unknown")
+        # === ПРИОРИТЕТ 1: Поиск ключевых слов в заголовке вакансии ===
+        # Сортируем по длине (убывание) для приоритета более специфичных фраз
+        # Пример: "оператор машинного доения" приоритетнее, чем просто "оператор"
+        sorted_terms = sorted(term_to_code.keys(), key=len, reverse=True)
+
+        for term in sorted_terms:
+            # Проверяем вхождение целого ключевого слова (регистронезависимо)
+            if term.lower() in title_lower:
+                return term_to_code[term]
+
+        # === ПРИОРИТЕТ 2: Поиск по полным названиям из PROFESSIONS ===
+        # На случай, если в заголовке используется официальное название профессии
+        for code, full_name in PROFESSIONS.items():
+            if full_name.lower() in title_lower:
+                return code
+
+        # === ПРИОРИТЕТ 3: Фоллбэк на старую логику (по search_term) ===
+        # Для обратной совместимости, если заголовок пустой или не распознан
+        if search_term:
+            search_lower = search_term.lower().strip()
+            # Прямое соответствие в term_to_code
+            if search_lower in term_to_code:
+                return term_to_code[search_lower]
+            # Поиск по вхождению в названия PROFESSIONS
+            for code, full_name in PROFESSIONS.items():
+                if search_lower in full_name.lower():
+                    return code
+
+        return "unknown"
