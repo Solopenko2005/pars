@@ -159,6 +159,7 @@ class SuperJobParser:
     #Парсинг одной вакансии
     def _parse_vacancy(self, vacancy: Dict, search_term: str, city_name: str = None) -> Optional[Dict]:
         try:
+            # === ЗАРПЛАТА ===
             salary_from = vacancy.get('payment_from')
             salary_to = vacancy.get('payment_to')
             currency = vacancy.get('currency')
@@ -167,7 +168,26 @@ class SuperJobParser:
             )
             average_salary = self.salary_processor.get_average_salary(salary_from, salary_to)
 
+            # === ДАТА ПУБЛИКАЦИИ ===
+            date_posted = None
+            pub_date = vacancy.get('publication_date') or vacancy.get('date_published')
+            if pub_date:
+                # Нормализация формата: "24.03.2026" → "2026-03-24"
+                if isinstance(pub_date, str):
+                    if '.' in pub_date:  # Формат "24.03.2026"
+                        try:
+                            parts = pub_date.split('.')
+                            if len(parts) == 3:
+                                date_posted = f"{parts[2]}-{parts[1]}-{parts[0]}"  # YYYY-MM-DD
+                        except:
+                            date_posted = pub_date[:10] if len(pub_date) >= 10 else pub_date
+                    elif '-' in pub_date:  # Уже формат "2026-03-24"
+                        date_posted = pub_date[:10]
+                    else:
+                        date_posted = pub_date
+
             city = city_name or vacancy.get('town', {}).get('title', 'Не указан')
+
             return {
                 'profession_code': self._get_profession_code(search_term),
                 'profession_name': search_term,
@@ -181,9 +201,11 @@ class SuperJobParser:
                 'url': vacancy.get('link', ''),
                 'company': vacancy.get('firm_name', ''),
                 'experience': vacancy.get('experience', {}).get('title', ''),
-                'employment': vacancy.get('type_of_work', {}).get('title', '')
+                'employment': vacancy.get('type_of_work', {}).get('title', ''),
+                'date_posted': date_posted  # ← НОВОЕ ПОЛЕ
             }
         except Exception as e:
+            print(f"Ошибка парсинга вакансии SuperJob: {e}")
             return None
 
     def _get_profession_code(self, profession_name: str) -> str:

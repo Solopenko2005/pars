@@ -1,3 +1,4 @@
+from config import HH_API_URL, TIMEOUT, DELAY, MAX_VACANCIES_PER_PROFESSION, MAX_WORKERS, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_HOST
 import requests
 import time
 import threading
@@ -111,11 +112,18 @@ class HHParser:
 
     #Парсинг вакансии
     def _parse_vacancy(self, vacancy: Dict, search_term: str) -> Dict:
+        # === ЗАРПЛАТА ===
         salary_from, salary_to, currency = self.salary_processor.parse_salary_hh(
             vacancy.get('salary')
         )
-
         average_salary = self.salary_processor.get_average_salary(salary_from, salary_to)
+
+        # === ДАТА ПУБЛИКАЦИИ ===
+        date_posted = None
+        published_at = vacancy.get('published_at')  # Пример: "2026-03-24T10:30:00+0300"
+        if published_at:
+            # Извлекаем только дату (первые 10 символов: "2026-03-24")
+            date_posted = published_at[:10] if len(published_at) >= 10 else published_at
 
         return {
             'profession_code': self._get_profession_code(search_term),
@@ -130,7 +138,8 @@ class HHParser:
             'url': vacancy.get('alternate_url', ''),
             'company': vacancy.get('employer', {}).get('name', ''),
             'experience': vacancy.get('experience', {}).get('name', ''),
-            'employment': vacancy.get('employment', {}).get('name', '')
+            'employment': vacancy.get('employment', {}).get('name', ''),
+            'date_posted': date_posted  # ← НОВОЕ ПОЛЕ
         }
 
     #Код профессии
