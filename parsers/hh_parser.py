@@ -12,76 +12,124 @@ from config import TIMEOUT, DELAY, MAX_VACANCIES_PER_PROFESSION, MAX_WORKERS, MA
 
 
 class HHParser:
+    # В классе HHParser
     def __init__(self):
-        # Создание сессии с настройками пула соединений
         self.session = requests.Session()
-        # Настройка Retry стратегии
+
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=5,
+            backoff_factor=1.0,  # Увеличиваем задержку между попытками
+            status_forcelist=[429, 500, 502, 503, 504, 403],  # Добавили 403 (Forbidden)
+            allowed_methods=["GET", "POST"]
         )
-        # Настройка адаптера
+
+        # Увеличиваем пул соединений для массовой загрузки
         adapter = HTTPAdapter(
             pool_connections=MAX_CONNECTIONS,
             pool_maxsize=MAX_CONNECTIONS,
-            max_retries=retry_strategy
+            max_retries=retry_strategy,
+            pool_block=False  # Не блокировать, если пул полон
         )
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
 
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'X-User-Agent': 'HH-User-Agent/1.0'  # Иногда помогает
         })
+
         self.salary_processor = SalaryProcessor()
         self.all_regions = self._get_all_regions()
-        print(f"Загружено {len(self.all_regions)} регионов для парсинга hh.ru")
+        print(f"Загружено {len(self.all_regions)} регионов hh.ru для полного парсинга")
+
+        #Semaphore для контроля параллелизма на уровне хоста
         self.semaphore = threading.Semaphore(MAX_CONNECTIONS_PER_HOST)
+
+        #Глобальный счётчик запросов для rate limiting
+        self._request_count = 0
+        self._request_lock = threading.Lock()
 
     # ID регионов
     def _get_all_regions(self) -> List[int]:
+        """Получает ВСЕ регионы и под-регионы России из API hh.ru"""
         try:
             response = self.session.get("https://api.hh.ru/areas", timeout=TIMEOUT)
             response.raise_for_status()
             areas = response.json()
-            russia = None
-            for area in areas:
-                if area['name'] == 'Россия':
-                    russia = area
-                    break
+            russia = next((area for area in areas if area['name'] == 'Россия'), None)
             if not russia:
-                return [1]
+                print("Не найдена Россия в списке регионов, используем дефолт")
+                return [1]  #Москва по умолчанию
             region_ids = []
-            for region in russia.get('areas', []):
-                region_ids.append(region['id'])
-                for city in region.get('areas', []):
-                    region_ids.append(city['id'])
+            # Рекурсивный обход всех уровней вложенности
+            def collect_ids(area_list):
+                for area in area_list:
+                    region_ids.append(int(area['id']))
+                    if area.get('areas'):
+                        collect_ids(area['areas'])
+
+            collect_ids(russia.get('areas', []))
+            # Убираем дубликаты и сортируем
+            region_ids = sorted(list(set(region_ids)))
+            print(f"Найдено {len(region_ids)} уникальных регионов/городов")
             return region_ids
         except Exception as e:
             print(f"Ошибка при загрузке регионов: {e}")
-            return [1]
+            # Возвращаем список крупных городов как фоллбэк
+            return [1, 2, 3, 4, 5, 66, 70, 78, 88, 92, 76, 58, 72, 30, 29, 56]  # ~16 городов
 
     # Поиск вакансий
     def search_vacancies(self, profession_name: str) -> List[Dict]:
+        """
+        Поиск вакансий по ВСЕМУ hh.ru: все регионы, глубокая пагинация.
+        """
         all_vacancies = []
-        # Ограничение количества потоков для hh
-        max_hh_workers = min(MAX_WORKERS // 2, 5)
+        seen_urls = set()  # Для исключения дубликатов
+        total_processed = 0
+        total_filtered = 0
+
+        max_hh_workers = min(MAX_WORKERS, 10)  #До 10 потоков для hh
+        print(f"Запуск парсинга hh.ru: '{profession_name}' | Потоков: {max_hh_workers}")
+
         with ThreadPoolExecutor(max_workers=max_hh_workers) as executor:
             futures = {}
-            for region_id in self.all_regions[:500]:
-                future = executor.submit(self._search_in_region, profession_name, region_id)
+            for region_id in self.all_regions:
+                future = executor.submit(
+                    self._search_in_region,
+                    profession_name,
+                    region_id,
+                    seen_urls
+                )
                 futures[future] = region_id
+            # Обработка результатов
             for future in as_completed(futures):
                 region_id = futures[future]
                 try:
-                    vacancies = future.result()
-                    all_vacancies.extend(vacancies)
-                    if vacancies:
-                        print(f"hh.ru в регионе {region_id}: найдено {len(vacancies)} вакансий")
-                    time.sleep(0.1)
+                    region_vacancies, stats = future.result()
+                    all_vacancies.extend(region_vacancies)
+
+                    total_processed += stats['processed']
+                    total_filtered += stats['filtered']
+
+                    if region_vacancies:
+                        print(f"Регион {region_id}: +{len(region_vacancies)} вакансий "
+                              f"(обработано: {stats['processed']}, отфильтровано: {stats['filtered']})")
+
+                    with self._request_lock:
+                        self._request_count += 1
+                        if self._request_count % 50 == 0:  # Каждые 50 регионов
+                            print(f"⏳ Пауза 2 сек после {self._request_count} регионов...")
+                            time.sleep(2)
+
                 except Exception as e:
                     print(f"Ошибка в регионе {region_id}: {e}")
-        return all_vacancies[:MAX_VACANCIES_PER_PROFESSION]
+                    continue
+
+        print(f"\nИтого по hh.ru: {len(all_vacancies)} вакансий найдено")
+        print(f"   Обработано страниц: {total_processed}, Отфильтровано: {total_filtered}")
+        return all_vacancies
 
     def _search_in_region(self, profession_name: str, region_id: int) -> List[Dict]:
         vacancies = []
