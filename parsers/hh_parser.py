@@ -86,7 +86,7 @@ class HHParser:
     def _search_in_region(self, profession_name: str, region_id: int) -> List[Dict]:
         vacancies = []
         page = 0
-        max_pages = 1
+        max_pages = min(3, data.get('pages', 1))
 
         with self.semaphore:
             while page < max_pages:
