@@ -37,7 +37,7 @@ class HHParser:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-            'X-User-Agent': 'HH-User-Agent/1.0'  # Иногда помогает
+            'X-User-Agent': 'HH-User-Agent/1.0'
         })
 
         self.salary_processor = SalaryProcessor()
@@ -131,35 +131,69 @@ class HHParser:
         print(f"   Обработано страниц: {total_processed}, Отфильтровано: {total_filtered}")
         return all_vacancies
 
-    def _search_in_region(self, profession_name: str, region_id: int) -> List[Dict]:
+    def _search_in_region(self, profession_name: str, region_id: int, seen_urls: set) -> tuple[List[Dict], Dict]:
+        """
+        Поиск в одном регионе с пагинацией до 20 страниц или пока есть результаты.
+        Возвращает: (список вакансий, статистика)
+        """
         vacancies = []
+        stats = {'processed': 0, 'filtered': 0}
         page = 0
-        max_pages = min(3, data.get('pages', 1))
+        max_pages = 20
+        has_more = True
 
         with self.semaphore:
-            while page < max_pages:
+            while has_more and page < max_pages:
                 params = {
                     'text': profession_name,
                     'area': region_id,
-                    'per_page': 50,
+                    'per_page': 100,
                     'page': page,
-                    'only_with_salary': False
+                    'only_with_salary': False,
                 }
+
                 try:
+                    self._rate_limit()
                     response = self.session.get(HH_API_URL, params=params, timeout=TIMEOUT)
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get('Retry-After', 5))
+                        print(f"429 в регионе {region_id}, ждём {retry_after}с")
+                        time.sleep(retry_after)
+                        continue
+
                     response.raise_for_status()
                     data = response.json()
-                    for item in data.get('items', []):
+                    items = data.get('items', [])
+                    if not items:
+                        break
+                    stats['processed'] += len(items)
+                    for item in items:
+                        vacancy_url = item.get('alternate_url', '')
+                        # Пропускаем дубликаты
+                        if vacancy_url in seen_urls:
+                            continue
+                        seen_urls.add(vacancy_url)
+
                         vacancy_data = self._parse_vacancy(item, profession_name)
-                        if vacancy_data:  # Только релевантные вакансии
+                        if vacancy_data:
                             vacancies.append(vacancy_data)
-                    if page >= data.get('pages', 0) - 1:
+                        else:
+                            stats['filtered'] += 1
+                    # Проверяем, есть ли следующие страницы
+                    current_pages = data.get('pages', 1)
+                    if page >= current_pages - 1:
                         break
                     page += 1
-                    time.sleep(0.3)
-                except Exception as e:
+
+                    time.sleep(DELAY)
+                except requests.exceptions.RequestException as e:
+                    print(f"Сетевая ошибка в регионе {region_id}, страница {page}: {e}")
                     break
-        return vacancies
+                except Exception as e:
+                    print(f"\Ошибка парсинга в регионе {region_id}: {e}")
+                    break
+
+        return vacancies, stats
 
     # Парсинг вакансии
     def _parse_vacancy(self, vacancy: Dict, search_term: str) -> Optional[Dict]:
@@ -202,6 +236,24 @@ class HHParser:
             'employment': vacancy.get('employment', {}).get('name', ''),
             'date_posted': date_posted
         }
+
+    def _rate_limit(self):
+        """
+        Глобальный rate limiter: не более N запросов в секунду.
+        Вызывать перед каждым запросом к API.
+        """
+        with self._request_lock:
+            current_time = time.time()
+            REQUESTS_PER_SECOND = 2
+            MIN_INTERVAL = 1.0 / REQUESTS_PER_SECOND
+
+            if hasattr(self, '_last_request_time'):
+                elapsed = current_time - self._last_request_time
+                if elapsed < MIN_INTERVAL:
+                    sleep_time = MIN_INTERVAL - elapsed
+                    time.sleep(min(sleep_time, 0.5))
+
+            self._last_request_time = time.time()
 
     def _get_profession_code(self, title: str, search_term: str = None) -> str:
         """
@@ -300,25 +352,18 @@ class HHParser:
                     return True
             return False
 
-        search_term_code = None
-        for code, keywords in keywords_map.items():
-            if is_relevant(search_term_lower, keywords):
-                search_term_code = code
-                break
-
-        if search_term_code:
-            # Проверяем, что заголовок вакансии также соответствует этой профессии
-            if is_relevant(title_lower, keywords_map.get(search_term_code, [])):
-                return search_term_code
-            else:
-                # Заголовок не соответствует - вакансия нерелевантна
-                return "unknown"
-
-        # Проверяем соответствие заголовка поисковому запросу напрямую
         if search_term_lower and search_term_lower in title_lower:
-            # Ищем код по ключевым словам в заголовке
             for code, keywords in keywords_map.items():
                 if is_relevant(title_lower, keywords):
                     return code
+            return f"search:{search_term_lower.replace(' ', '_')}"
+        for code, keywords in keywords_map.items():
+            if is_relevant(title_lower, keywords):
+                return code
+        if search_term_lower:
+            search_words = set(search_term_lower.split())
+            title_words = set(title_lower.split())
+            if search_words and len(search_words & title_words) / len(search_words) >= 0.5:
+                return f"fuzzy:{search_term_lower.replace(' ', '_')}"
 
         return "unknown"
