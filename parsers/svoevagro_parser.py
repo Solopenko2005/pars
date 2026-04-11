@@ -120,7 +120,7 @@ class SvoevagroParser:
                     continue
 
                 consecutive_empty = 0
-                print(f"  📄 Страница {page}: +{len(new_elements)} элементов (всего вакансий: {len(vacancies)})")
+                print(f"Страница {page}: +{len(new_elements)} элементов (всего вакансий: {len(vacancies)})")
 
                 for element in new_elements:
                     if len(vacancies) >= MAX_VACANCIES_PER_PROFESSION:
