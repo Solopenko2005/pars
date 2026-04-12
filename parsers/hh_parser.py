@@ -1,5 +1,5 @@
 from config import HH_API_URL, TIMEOUT, DELAY, MAX_VACANCIES_PER_PROFESSION, MAX_WORKERS, MAX_CONNECTIONS, \
-    MAX_CONNECTIONS_PER_HOST
+    MAX_CONNECTIONS_PER_HOST, HH_MAX_REGIONS, HH_MAX_PAGES_PER_REGION, HH_TOP_REGIONS_ONLY
 import requests
 import time
 import threading
@@ -53,7 +53,7 @@ class HHParser:
         self._last_request_time = 0
 
     def _get_all_regions(self) -> List[int]:
-        """Получает ВСЕ регионы и под-регионы России из API hh.ru"""
+        """Получает ТОП регионы России из API hh.ru для оптимизации"""
         try:
             response = self.session.get("https://api.hh.ru/areas", timeout=TIMEOUT)
             response.raise_for_status()
@@ -73,7 +73,17 @@ class HHParser:
 
             collect_ids(russia.get('areas', []))
             region_ids = sorted(list(set(region_ids)))
-            print(f"Найдено {len(region_ids)} уникальных регионов/городов")
+            
+            # ОПТИМИЗАЦИЯ: Используем только топ регионы
+            if HH_TOP_REGIONS_ONLY and len(region_ids) > HH_MAX_REGIONS:
+                # Берем только основные крупные регионы (первые по ID - обычно крупнейшие)
+                top_regions = [1, 2, 4, 7, 9, 10, 13, 16, 19, 21, 23, 25, 27, 29, 30, 32, 35, 38, 40, 42,
+                              44, 46, 48, 50, 52, 54, 56, 58, 59, 61, 63, 65, 66, 68, 69, 70, 71, 72, 73, 74,
+                              75, 76, 78, 79, 80, 81, 83, 85, 86, 88, 89, 90, 91, 92, 93, 94, 95, 96, 98, 99]
+                region_ids = [rid for rid in top_regions if rid in region_ids][:HH_MAX_REGIONS]
+                print(f"Оптимизация: используем {len(region_ids)} основных регионов вместо {len([r for r in region_ids])}")
+            
+            print(f"Найдено {len(region_ids)} регионов для парсинга")
             return region_ids
         except Exception as e:
             print(f"Ошибка при загрузке регионов: {e}")
@@ -81,14 +91,14 @@ class HHParser:
 
     def search_vacancies(self, profession_name: str) -> List[Dict]:
         """
-        Поиск вакансий по ВСЕМУ hh.ru: все регионы, глубокая пагинация.
+        Поиск вакансий по ВСЕМУ hh.ru: оптимизированные регионы, пагинация.
         """
         all_vacancies = []
         seen_urls = set()
         total_processed = 0
         total_filtered = 0
 
-        max_hh_workers = min(MAX_WORKERS, 10)
+        max_hh_workers = min(MAX_WORKERS, 15)  # Увеличено для ускорения
         print(f"Запуск парсинга hh.ru: '{profession_name}' | Потоков: {max_hh_workers}")
 
         with ThreadPoolExecutor(max_workers=max_hh_workers) as executor:
@@ -115,11 +125,12 @@ class HHParser:
                         print(f"Регион {region_id}: +{len(region_vacancies)} вакансий "
                               f"(обработано: {stats['processed']}, отфильтровано: {stats['filtered']})")
 
+                    # Оптимизация: пауза реже
                     with self._request_lock:
                         self._request_count += 1
-                        if self._request_count % 50 == 0:
-                            print(f"⏳ Пауза 2 сек после {self._request_count} регионов...")
-                            time.sleep(2)
+                        if self._request_count % 100 == 0:
+                            print(f"⏳ Пауза 1 сек после {self._request_count} регионов...")
+                            time.sleep(1)
 
                 except Exception as e:
                     print(f"Ошибка в регионе {region_id}: {e}")
@@ -131,13 +142,13 @@ class HHParser:
 
     def _search_in_region(self, profession_name: str, region_id: int, seen_urls: set) -> tuple[List[Dict], Dict]:
         """
-        Поиск в одном регионе с пагинацией до 20 страниц или пока есть результаты.
+        Поиск в одном регионе с пагинацией до HH_MAX_PAGES_PER_REGION страниц или пока есть результаты.
         Возвращает: (список вакансий, статистика)
         """
         vacancies = []
         stats = {'processed': 0, 'filtered': 0}
         page = 0
-        max_pages = 20
+        max_pages = HH_MAX_PAGES_PER_REGION  # ОПТИМИЗАЦИЯ: ограничено страниц
         has_more = True
 
         with self.semaphore:
