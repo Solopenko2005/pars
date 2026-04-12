@@ -1,4 +1,14 @@
-```gitignore
-__pycache__/
-*.pyc
+```
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Original rules preserved
+*.log
 ```
